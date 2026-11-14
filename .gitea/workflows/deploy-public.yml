@@ -1,7 +1,9 @@
 name: deploy-public
-# One click deploys a target's public services on Almaz: the plan names each
-# consumer's current main revision image and the core digest that consumer pins.
-# The Almaz runner connects as the deployment owner through a forced command.
+# One click deploys a target's public frontend and API services on Almaz: the
+# plan names each consumer's current main revision image. Platform cores are not
+# deployed here; each consumer's GitHub workflow rolls out its core through the
+# fleet-deploy receiver. The Almaz runner connects as the deployment owner
+# through a forced command.
 on:
   workflow_dispatch:
     inputs:

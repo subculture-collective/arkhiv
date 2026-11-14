@@ -196,6 +196,7 @@ Host registration (operator work, tracked on #61):
 
 The shared project's `.env` keeps `ARCHIVE_ENGINE_IMAGE` at the bootstrap pin.
 Running `up -d` for the whole project by hand would put `archive-core` back on
-it; update it first, or recreate only other services. The manual Gitea
-`deploy-public` workflow (`docs/runbooks/public-deploy.md`) also deploys this
-service from the same pin.
+it; update it first, or recreate only other services. Only the consumers'
+GitHub workflows deploy the three cores: the manual Gitea `deploy-public`
+workflow (`docs/runbooks/public-deploy.md`) no longer lists them and refuses a
+`core` service.

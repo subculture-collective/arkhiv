@@ -6,6 +6,17 @@ first and becomes automatic once a few cycles pass; the targets are the Almaz
 public project, the Anarchist project and the Dedhed pilot; the deploy job
 runs on Almaz's own runner; the agent account owns the credentials.
 
+Update, 2026-11-14: core rollouts no longer go through `deploy-public`. Each
+platform core belongs to one consumer, and that consumer's GitHub `deploy`
+workflow rolls it out through its own fleet-deploy receiver profile and key:
+`archive-core` from this repository, `bill-core` from bill-nye-tv,
+`democracy-core` from democracy-now-tv (and Chicago's core from
+chicago-labor-archive). The receiver backs up that core's database, runs
+`migrate` with `ARKHIV_READER_ROLE=arkhiv_reader`, swaps the service, checks it
+and rolls back on failure; see
+[automatic core deploys](../reference/headless-core.md#automatic-core-deploys)
+and #61. `deploy-public` still deploys the frontend and API services below.
+
 ## Why
 
 Every lane today ends at a reviewed PR and a manual deployment. Merging the
@@ -32,12 +43,14 @@ since 2026-10-20 (registry URL encoding, fixed in PR #148). Consumers pin core
    with its committed Dockerfile(s) after `verify` passes, and pushes them to
    the Gitea container registry tagged with the merge commit. The image label
    `org.opencontainers.image.revision` is the only identity the deploy trusts.
-5. **Deploy.** `deploy-public` in this repository is a `workflow_dispatch`
-   on the `almaz` runner. It connects to Almaz as `onnwee` through an SSH key
-   whose `authorized_keys` entry forces a single command, and runs
-   `scripts/public_deploy.py` from the deployment's private `ops` directory.
-   The script backs up, pulls the exact digests, runs core migrations with the
-   operator credential when the core changes, swaps each service through a
+5. **Deploy.** Each consumer's GitHub `deploy` workflow deploys the core it
+   pins through the fleet-deploy receiver (see the update above). For the
+   frontend and API services, `deploy-public` in this repository is a
+   `workflow_dispatch` on the `almaz` runner. It connects to Almaz as `onnwee`
+   through an SSH key whose `authorized_keys` entry forces a single command, and
+   runs `scripts/public_deploy.py` from the deployment's private `ops`
+   directory. The script backs up when an API changes, pulls the exact images,
+   swaps each service through a
    compose overlay with configuration-equivalence checks (the pattern the
    2026-10-20 activations used), waits for health, checks the public origin,
    runs the existing monitor, and writes a receipt. Any failure restores the
@@ -47,7 +60,7 @@ since 2026-10-20 (registry URL encoding, fixed in PR #148). Consumers pin core
 
 | Target | Project on Almaz | Services deployed |
 | --- | --- | --- |
-| platform | `arkhiv-platform-public-20261004` | `archive-core`, `bill-core`, `democracy-core`, `reference`, `bill-nye-reference`, `democracy-now-reference`, `riot-public-api`, `riot-public-web` |
+| platform | `arkhiv-platform-public-20261004` | `reference`, `bill-nye-reference`, `democracy-now-reference`, `riot-public-api`, `riot-public-web` (the three cores were removed on 2026-11-14) |
 | anarchist | `arkhiv-pilot` | `public-api`, `public-web` |
 | dedhed | `dedhed-public-20261004` | `api`, `web`, `operator` |
 
@@ -59,7 +72,7 @@ them without losing content.
 
 - No tool deletes originals, checkpoints or previous images.
 - Public cores keep SELECT-only roles; migrations use the private operator
-  credential only inside the deploy script.
+  credential only inside the fleet-deploy receiver's `migrate` step.
 - The deploy script refuses a digest whose image revision label does not match
   the requested consumer revision, and refuses to run while another deploy or
   maintenance lock is held.

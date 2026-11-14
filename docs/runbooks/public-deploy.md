@@ -6,24 +6,24 @@ own Gitea runner (label `almaz`). It resolves a plan with
 that runs `scripts/public_deploy.py` as the deployment owner. Design and
 decisions: [plan 0006](../plans/0006-automated-update-and-deploy.md).
 
+It deploys frontend and API images only. Since 2026-11-14 the platform cores
+(`archive-core`, `bill-core`, `democracy-core`) are rolled out by each
+consumer's GitHub `deploy` workflow through its own fleet-deploy receiver
+profile ([automatic core deploys](../reference/headless-core.md#automatic-core-deploys)).
+No target lists a core, and the script refuses a configuration with a `core`
+service, so the two paths cannot replace the same container.
+
 ## What a run does
 
 1. The plan names, per compose service, the image that the owning repository
-   published for its current `main` commit (`<registry>/<name>:<40-hex>`), and
-   for each shared core the immutable digest that the owning consumer pins in
-   `deploy/archive-core.env` at that same commit. A core never moves ahead of
-   the consumer that verified it.
+   published for its current `main` commit (`<registry>/<name>:<40-hex>`).
 2. On Almaz the script takes `~/.local/state/arkhiv-deploy/deploy.lock` and,
    for the platform target, the maintenance lock the monitor, replay and backup
    jobs share. It pulls every image, refuses any whose
    `org.opencontainers.image.revision` label differs from the planned revision,
    and derives brand frontends that must proxy a differently named core
    (`democracy-core`, `bill-core`) from the consumer image.
-3. If a core or API image changes, it runs the configured backup first, then
-   each core's `migrate` with the private operator credential. With
-   `ARKHIV_READER_ROLE` set on that command, `migrate` grants the public role
-   SELECT on every table, including new ones; see
-   [public core](../reference/public-core.md).
+3. If an API image changes, it runs the configured backup first.
 4. Each changed service is swapped through a compose overlay that changes only
    the image: configuration equivalence is checked with `compose config`,
    `up --wait` runs for that one service, the new container must keep the old
@@ -67,6 +67,9 @@ SHA-256 of the script that ran.
 Each receipt lists, per service, `rollback_command`: the same `compose up`
 with that service's `*.rollback.json` overlay, which restores the previous
 image id. Run it as `onnwee` on Almaz for the services to revert, newest first.
-Database migrations are additive and checksum-locked; a core rollback must use a
-compatible checkpoint when a migration has run, as
-[deployment operations](../DEPLOYMENT.md) already requires.
+Receipts from runs before 2026-11-14 may also list core swaps and migrations.
+Do not replay those core rollback commands: the fleet-deploy receiver now owns
+each core, and its own receipts and rollback apply. Database migrations are
+additive and checksum-locked; a core rollback must use a compatible checkpoint
+when a migration has run, as [deployment operations](../DEPLOYMENT.md) already
+requires.
