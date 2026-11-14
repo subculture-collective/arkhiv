@@ -7,7 +7,7 @@ from public_deploy import DeployError, apply, load_config, validate_plan
 
 REGISTRY = 'git.subcult.tv/subculture-collective'
 SHA = 'a' * 40
-CORE = REGISTRY + '/archive-core@sha256:' + 'b' * 64
+API = REGISTRY + '/arkhiv-riot-grrrl-api:' + SHA
 
 
 class FakeDocker:
@@ -52,7 +52,7 @@ class FakeDocker:
             ref = spec[service]['image']
             self.running[service] = ref if ref.startswith('sha256:') else self.image_id(ref)
             return ''
-        if args and args[0] in ('backup', 'monitor', 'migrate'):
+        if args and args[0] in ('backup', 'monitor'):
             return ''
         raise AssertionError('unexpected command ' + ' '.join(args))
 
@@ -80,16 +80,17 @@ class PlanValidationTests(unittest.TestCase):
         self.state = tempfile.TemporaryDirectory()
         self.addCleanup(self.state.cleanup)
         self.config = config(self.state.name, {'reference': {'kind': 'frontend', 'image': 'archive-reference', 'origin': 'https://arkhiv.subcult.tv'},
-                                               'archive-core': {'kind': 'core', 'image': 'archive-core'}})
+                                               'riot-public-api': {'kind': 'api', 'image': 'arkhiv-riot-grrrl-api'}})
 
-    def test_accepts_registry_tags_and_core_digests_only(self):
-        good = {'services': {'reference': {'image': REGISTRY + '/archive-reference:' + SHA}, 'archive-core': {'image': CORE}}}
+    def test_accepts_registry_revision_tags_only(self):
+        good = {'services': {'reference': {'image': REGISTRY + '/archive-reference:' + SHA}, 'riot-public-api': {'image': API}}}
         resolved = validate_plan(self.config, 'platform', good)
         self.assertEqual(resolved['reference']['revision'], SHA)
-        self.assertIsNone(resolved['archive-core']['revision'])
+        self.assertEqual(resolved['riot-public-api']['revision'], SHA)
         for bad in [{'reference': {'image': REGISTRY + '/archive-reference:main'}},
                     {'reference': {'image': 'docker.io/library/nginx:' + SHA}},
-                    {'archive-core': {'image': REGISTRY + '/archive-core:' + SHA}},
+                    {'riot-public-api': {'image': REGISTRY + '/arkhiv-riot-grrrl-api@sha256:' + 'b' * 64}},
+                    {'archive-core': {'image': REGISTRY + '/archive-core@sha256:' + 'b' * 64}},
                     {'db': {'image': REGISTRY + '/postgres:' + SHA}},
                     {'reference': {'image': REGISTRY + '/archive-reference@sha256:' + 'c' * 64}}]:
             with self.subTest(bad=bad), self.assertRaises(DeployError):
@@ -99,6 +100,12 @@ class PlanValidationTests(unittest.TestCase):
         with self.assertRaises(DeployError):
             load_config_dict({'state': '/tmp/x', 'registry': REGISTRY, 'targets': {'t': {'project': 'p', 'services': {'svc': {'kind': 'web', 'image': 'x'}}}}})
 
+    def test_refuses_a_core_service(self):
+        # Core rollouts go through each consumer's GitHub workflow and fleet-deploy.
+        with self.assertRaisesRegex(DeployError, 'fleet-deploy'):
+            load_config_dict({'state': '/tmp/x', 'registry': REGISTRY, 'targets': {'platform': {'project': 'p', 'services': {
+                'bill-core': {'kind': 'core', 'image': 'archive-core', 'migrate': ['migrate', '{image}']}}}}})
+
 
 class ApplyTests(unittest.TestCase):
     def setUp(self):
@@ -106,50 +113,49 @@ class ApplyTests(unittest.TestCase):
         self.addCleanup(self.state.cleanup)
         self.services = {'reference': {'kind': 'frontend', 'image': 'archive-reference', 'origin': 'https://arkhiv.subcult.tv'},
                          'democracy-now-reference': {'kind': 'frontend', 'image': 'democracy-now-tv-frontend', 'upstream': 'democracy-core:8080', 'origin': 'https://democracy-now.subcult.tv'},
-                         'archive-core': {'kind': 'core', 'image': 'archive-core', 'migrate': ['migrate', '{image}']}}
+                         'riot-public-api': {'kind': 'api', 'image': 'arkhiv-riot-grrrl-api'}}
         self.config = config(self.state.name, self.services, {'before_backend_change': ['backup'], 'after': ['monitor']})
         self.plan = {'services': {'reference': {'image': REGISTRY + '/archive-reference:' + SHA},
                                   'democracy-now-reference': {'image': REGISTRY + '/democracy-now-tv-frontend:' + SHA},
-                                  'archive-core': {'image': CORE}}}
-        self.labels = {REGISTRY + '/archive-reference:' + SHA: SHA, REGISTRY + '/democracy-now-tv-frontend:' + SHA: SHA, CORE: 'ignored'}
+                                  'riot-public-api': {'image': API}}}
+        self.labels = {REGISTRY + '/archive-reference:' + SHA: SHA, REGISTRY + '/democracy-now-tv-frontend:' + SHA: SHA, API: SHA}
 
     def test_rejects_an_image_whose_revision_label_differs(self):
-        docker = FakeDocker('arkhiv-platform-public-20261004', {'reference': 'sha256:old', 'democracy-now-reference': 'sha256:old', 'archive-core': 'sha256:old'}, {**self.labels, REGISTRY + '/archive-reference:' + SHA: 'f' * 40})
+        docker = FakeDocker('arkhiv-platform-public-20261004', {'reference': 'sha256:old', 'democracy-now-reference': 'sha256:old', 'riot-public-api': 'sha256:old'}, {**self.labels, REGISTRY + '/archive-reference:' + SHA: 'f' * 40})
         with self.assertRaisesRegex(DeployError, 'carries revision'):
             apply(self.config, 'platform', self.plan, run=docker.run, fetch=docker.fetch)
         self.assertFalse(any('up' in c for c in docker.calls))
 
     def test_dry_run_pulls_and_reports_without_swapping(self):
-        docker = FakeDocker('arkhiv-platform-public-20261004', {'reference': 'sha256:old', 'democracy-now-reference': 'sha256:old', 'archive-core': 'sha256:old'}, self.labels)
+        docker = FakeDocker('arkhiv-platform-public-20261004', {'reference': 'sha256:old', 'democracy-now-reference': 'sha256:old', 'riot-public-api': 'sha256:old'}, self.labels)
         receipt = apply(self.config, 'platform', self.plan, run=docker.run, fetch=docker.fetch, dry_run=True)
         self.assertEqual(receipt['status'], 'dry-run')
-        self.assertEqual(sorted(receipt['changing']), ['archive-core', 'democracy-now-reference', 'reference'])
-        self.assertFalse(any('up' in c or c[0] in ('backup', 'migrate') for c in docker.calls))
+        self.assertEqual(sorted(receipt['changing']), ['democracy-now-reference', 'reference', 'riot-public-api'])
+        self.assertFalse(any('up' in c or c[0] == 'backup' for c in docker.calls))
         self.assertTrue(any(c[:2] == ['docker', 'build'] for c in docker.calls), 'the brand wrapper is built so a dry run proves the derivation')
 
-    def test_backend_change_backs_up_migrates_then_swaps_cores_before_frontends(self):
-        docker = FakeDocker('arkhiv-platform-public-20261004', {'reference': 'sha256:old', 'democracy-now-reference': 'sha256:old', 'archive-core': 'sha256:old'}, self.labels)
+    def test_backend_change_backs_up_then_swaps_apis_before_frontends(self):
+        docker = FakeDocker('arkhiv-platform-public-20261004', {'reference': 'sha256:old', 'democracy-now-reference': 'sha256:old', 'riot-public-api': 'sha256:old'}, self.labels)
         receipt = apply(self.config, 'platform', self.plan, run=docker.run, fetch=docker.fetch)
         self.assertEqual(receipt['status'], 'deployed')
         ops = [c[0] if c[0] != 'docker' else (c[1] if c[1] != 'compose' else 'compose ' + ('up' if 'up' in c else 'config')) for c in docker.calls]
-        self.assertLess(ops.index('backup'), ops.index('migrate'))
-        self.assertLess(ops.index('migrate'), ops.index('compose up'))
+        self.assertLess(ops.index('backup'), ops.index('compose up'))
         self.assertEqual(ops[-1], 'monitor')
-        self.assertEqual([s['service'] for s in receipt['services']], ['archive-core', 'reference', 'democracy-now-reference'])
-        self.assertEqual(receipt['migrations'], [['migrate', CORE]])
+        self.assertEqual([s['service'] for s in receipt['services']], ['riot-public-api', 'reference', 'democracy-now-reference'])
+        self.assertNotIn('migrations', receipt)
         self.assertIn('https://democracy-now.subcult.tv/', docker.fetches)
         release = next(Path(self.state.name, 'deploys').iterdir())
-        self.assertTrue((release / 'archive-core.rollback.json').exists())
+        self.assertTrue((release / 'riot-public-api.rollback.json').exists())
         self.assertEqual(json.loads((release / 'receipt.json').read_text())['status'], 'deployed')
 
     def test_unchanged_images_do_nothing(self):
-        docker = FakeDocker('arkhiv-platform-public-20261004', {'reference': 'sha256:id-' + SHA[:12], 'democracy-now-reference': 'sha256:id-' + SHA[:12], 'archive-core': 'sha256:id-' + ('b' * 64)[:12]}, self.labels)
+        docker = FakeDocker('arkhiv-platform-public-20261004', {'reference': 'sha256:id-' + SHA[:12], 'democracy-now-reference': 'sha256:id-' + SHA[:12], 'riot-public-api': 'sha256:id-' + SHA[:12]}, self.labels)
         receipt = apply(self.config, 'platform', self.plan, run=docker.run, fetch=docker.fetch)
         self.assertEqual(receipt['status'], 'unchanged')
-        self.assertFalse(any(c[0] in ('backup', 'migrate') or 'up' in c for c in docker.calls))
+        self.assertFalse(any(c[0] == 'backup' or 'up' in c for c in docker.calls))
 
     def test_failed_origin_check_rolls_the_service_back_and_stops(self):
-        docker = FakeDocker('arkhiv-platform-public-20261004', {'reference': 'sha256:old', 'democracy-now-reference': 'sha256:old', 'archive-core': 'sha256:old'}, self.labels, fail_check=True)
+        docker = FakeDocker('arkhiv-platform-public-20261004', {'reference': 'sha256:old', 'democracy-now-reference': 'sha256:old', 'riot-public-api': 'sha256:old'}, self.labels, fail_check=True)
         import public_deploy
         original_sleep = public_deploy.time.sleep
         public_deploy.time.sleep = lambda seconds: None
@@ -164,20 +170,18 @@ class ApplyTests(unittest.TestCase):
         release = next(Path(self.state.name, 'deploys').iterdir())
         receipt = json.loads((release / 'receipt.json').read_text())
         self.assertEqual(receipt['status'], 'failed')
-        # The core had already swapped cleanly; the failing frontend was reverted and the run stopped there.
-        self.assertEqual([(s['service'], s['status']) for s in receipt['services']], [('archive-core', 'deployed')])
+        # The API had already swapped cleanly; the failing frontend was reverted and the run stopped there.
+        self.assertEqual([(s['service'], s['status']) for s in receipt['services']], [('riot-public-api', 'deployed')])
         self.assertEqual(docker.running['democracy-now-reference'], 'sha256:old')
         self.assertFalse(any(c[0] == 'monitor' for c in docker.calls))
 
 
     def test_docker_prefix_applies_to_every_docker_and_compose_command(self):
-        docker = FakeDocker('arkhiv-platform-public-20261004', {'reference': 'sha256:old', 'democracy-now-reference': 'sha256:old', 'archive-core': 'sha256:old'}, self.labels)
+        docker = FakeDocker('arkhiv-platform-public-20261004', {'reference': 'sha256:old', 'democracy-now-reference': 'sha256:old', 'riot-public-api': 'sha256:old'}, self.labels)
         prefixed = config(self.state.name, self.services, {'docker': ['sudo', '-n', 'docker']})
         def run(args, stdin=None):
-            if args[:1] != ['migrate']:
-                self.assertEqual(args[:3], ['sudo', '-n', 'docker'], args)
-                return docker.run(args[2:], stdin)
-            return docker.run(args, stdin)
+            self.assertEqual(args[:3], ['sudo', '-n', 'docker'], args)
+            return docker.run(args[2:], stdin)
         receipt = apply(prefixed, 'platform', self.plan, run=run, fetch=docker.fetch)
         self.assertEqual(receipt['status'], 'deployed')
         self.assertEqual(receipt['services'][0]['command'][:3], ['sudo', '-n', 'docker'])

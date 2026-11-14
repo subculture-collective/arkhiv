@@ -2,12 +2,10 @@
 """Resolve the image plan for a public deployment target from each repository's main branch.
 
 Frontend and API services deploy the image their repository published for its current
-`main` commit. Shared cores deploy the immutable digest that the owning consumer pins in
-`deploy/archive-core.env` on that same commit, so a core never moves ahead of the
-consumer that verified it.
+`main` commit. Platform cores are not part of any target: each consumer's GitHub
+workflow rolls out the core it pins through the fleet-deploy receiver.
 """
 import argparse
-import base64
 import json
 import os
 import re
@@ -20,11 +18,8 @@ REGISTRY = 'git.subcult.tv/subculture-collective'
 TARGETS = {
     'platform': {
         'reference': {'repository': 'subculture-collective/arkhiv', 'image': 'archive-reference'},
-        'archive-core': {'repository': 'subculture-collective/arkhiv', 'core': True},
         'democracy-now-reference': {'repository': 'subculture-collective/democracy-now-tv', 'image': 'democracy-now-tv-frontend'},
-        'democracy-core': {'repository': 'subculture-collective/democracy-now-tv', 'core': True},
         'bill-nye-reference': {'repository': 'subculture-collective/bill-nye-tv', 'image': 'bill-nye-tv-frontend'},
-        'bill-core': {'repository': 'subculture-collective/bill-nye-tv', 'core': True},
         'riot-public-web': {'repository': 'subculture-collective/arkhiv-riot-grrrl', 'image': 'arkhiv-riot-grrrl-web'},
         'riot-public-api': {'repository': 'subculture-collective/arkhiv-riot-grrrl', 'image': 'arkhiv-riot-grrrl-api'},
     },
@@ -58,15 +53,6 @@ def main_revision(fetch, repository, cache):
     return cache[repository]
 
 
-def core_digest(fetch, repository, revision):
-    content = fetch('/repos/' + repository + '/contents/deploy/archive-core.env?ref=' + revision)
-    text = base64.b64decode(content['content']).decode()
-    match = re.fullmatch(r'ARCHIVE_ENGINE_IMAGE=(' + re.escape(REGISTRY) + r'/archive-core@sha256:[0-9a-f]{64})\n', text)
-    if not match:
-        raise ValueError(repository + ' pins no immutable archive-core digest at ' + revision)
-    return match.group(1)
-
-
 def plan(target, fetch=default_fetch, source=None):
     if target not in TARGETS:
         raise ValueError('Unknown target ' + target)
@@ -74,10 +60,7 @@ def plan(target, fetch=default_fetch, source=None):
     services = {}
     for service, spec in TARGETS[target].items():
         revision = main_revision(fetch, spec['repository'], cache)
-        if spec.get('core'):
-            services[service] = {'image': core_digest(fetch, spec['repository'], revision), 'from': spec['repository'] + '@' + revision}
-        else:
-            services[service] = {'image': REGISTRY + '/' + spec['image'] + ':' + revision, 'revision': revision, 'from': spec['repository']}
+        services[service] = {'image': REGISTRY + '/' + spec['image'] + ':' + revision, 'revision': revision, 'from': spec['repository']}
     return {'target': target, 'services': services, 'source': source or {}}
 
 

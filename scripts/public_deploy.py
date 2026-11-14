@@ -2,8 +2,9 @@
 """Apply a reviewed image plan to one owned public deployment on this host, swapping one service at a time with rollback.
 
 The plan names, per compose service, the exact registry image to run: a content-hashed
-tag `<registry>/<name>:<40-hex revision>` whose image label must carry that revision, or
-an immutable `<registry>/<name>@sha256:<digest>` for the shared core. Each swap is a
+tag `<registry>/<name>:<40-hex revision>` whose image label must carry that revision.
+Platform cores are not deployable here: each consumer's GitHub workflow rolls out its
+core through the fleet-deploy receiver, and a `core` service is refused. Each swap is a
 compose overlay that changes only the image, is checked for configuration equivalence,
 waited for health, checked over HTTPS, and reverted on any failure. Previous images are
 never deleted; every run leaves a receipt.
@@ -22,7 +23,6 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-DIGEST = re.compile(r'^(?P<registry>[a-z0-9.-]+(?::\d+)?/[a-z0-9._-]+)/(?P<name>[a-z0-9._-]+)@sha256:(?P<digest>[0-9a-f]{64})$')
 TAG = re.compile(r'^(?P<registry>[a-z0-9.-]+(?::\d+)?/[a-z0-9._-]+)/(?P<name>[a-z0-9._-]+):(?P<revision>[0-9a-f]{40})$')
 SERVICE = re.compile(r'^[a-z0-9][a-z0-9_-]{0,63}$')
 DOCKER = ['docker']
@@ -62,7 +62,9 @@ def load_config(path):
             if key not in target:
                 raise DeployError('Target ' + name + ' lacks ' + key)
         for service, spec in target['services'].items():
-            if not SERVICE.match(service) or spec.get('kind') not in ('frontend', 'api', 'core') or not re.fullmatch(r'[a-z0-9._-]+', spec.get('image', '')):
+            if spec.get('kind') == 'core':
+                raise DeployError('Target ' + name + ' service ' + service + ' is a core: core rollouts go through the consumer\'s GitHub workflow and the fleet-deploy receiver')
+            if not SERVICE.match(service) or spec.get('kind') not in ('frontend', 'api') or not re.fullmatch(r'[a-z0-9._-]+', spec.get('image', '')):
                 raise DeployError('Target ' + name + ' service ' + service + ' is misconfigured')
     return config
 
@@ -78,16 +80,10 @@ def validate_plan(config, target_name, plan):
         if spec is None:
             raise DeployError('Service ' + service + ' is not deployable in target ' + target_name)
         image = entry.get('image', '') if isinstance(entry, dict) else ''
-        if spec['kind'] == 'core':
-            match = DIGEST.match(image)
-            if not match or match.group('registry') != config['registry'] or match.group('name') != spec['image']:
-                raise DeployError('Service ' + service + ' requires an immutable ' + config['registry'] + '/' + spec['image'] + '@sha256 digest')
-            resolved[service] = {'image': image, 'revision': None}
-        else:
-            match = TAG.match(image)
-            if not match or match.group('registry') != config['registry'] or match.group('name') != spec['image']:
-                raise DeployError('Service ' + service + ' requires ' + config['registry'] + '/' + spec['image'] + ':<revision>')
-            resolved[service] = {'image': image, 'revision': match.group('revision')}
+        match = TAG.match(image)
+        if not match or match.group('registry') != config['registry'] or match.group('name') != spec['image']:
+            raise DeployError('Service ' + service + ' requires ' + config['registry'] + '/' + spec['image'] + ':<revision>')
+        resolved[service] = {'image': image, 'revision': match.group('revision')}
     return resolved
 
 
@@ -95,7 +91,7 @@ def pull_and_verify(run, image, revision):
     run(DOCKER + ['pull', '--quiet', image])
     inspected = json.loads(run(DOCKER + ['image', 'inspect', image]))[0]
     labels = inspected['Config'].get('Labels') or {}
-    if revision is not None and labels.get('org.opencontainers.image.revision') != revision:
+    if labels.get('org.opencontainers.image.revision') != revision:
         raise DeployError('Image ' + image + ' carries revision ' + str(labels.get('org.opencontainers.image.revision')) + ', not ' + revision)
     return inspected['Id']
 
@@ -225,7 +221,7 @@ def apply(config, target_name, plan, run=default_run, fetch=default_fetch, dry_r
                 image_id = pull_and_verify(run, entry['image'], entry['revision'])
                 ref = entry['image']
                 if spec.get('upstream'):
-                    ref = 'local/arkhiv-deploy/' + target_name + '-' + service + ':' + (entry['revision'] or image_id.split(':')[-1][:12])
+                    ref = 'local/arkhiv-deploy/' + target_name + '-' + service + ':' + entry['revision']
                     image_id = wrap_upstream(run, entry['image'], spec['upstream'], ref)
                 images[service] = (image_id, ref)
             changing = [s for s, (image_id, _) in images.items() if json.loads(run(DOCKER + ['inspect', container_name(target['project'], s)]))[0]['Image'] != image_id]
@@ -238,19 +234,14 @@ def apply(config, target_name, plan, run=default_run, fetch=default_fetch, dry_r
                 receipt['status'] = 'unchanged'
                 save()
                 return receipt
-            backend_change = any(target['services'][s]['kind'] in ('core', 'api') for s in changing)
+            backend_change = any(target['services'][s]['kind'] == 'api' for s in changing)
             if backend_change and target.get('before_backend_change'):
                 run(target['before_backend_change'])
                 receipt['backup'] = target['before_backend_change']
-            order = sorted(changing, key=lambda s: 0 if target['services'][s]['kind'] in ('core', 'api') else 1)
+            order = sorted(changing, key=lambda s: 0 if target['services'][s]['kind'] == 'api' else 1)
             for service in order:
                 spec = target['services'][service]
                 image_id, ref = images[service]
-                if spec.get('migrate'):
-                    command = [part.replace('{image}', resolved[service]['image']) for part in spec['migrate']]
-                    run(command)
-                    receipt.setdefault('migrations', []).append(command)
-                    save()
                 record = swap_service(run, fetch, release, target['project'], service, image_id, ref, spec.get('origin'), spec.get('check'))
                 receipt['services'].append(record)
                 save()
