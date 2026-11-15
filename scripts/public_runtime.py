@@ -32,6 +32,28 @@ def digest(path):
     return h.hexdigest()
 
 
+def backup_targets(cfg):
+    """Keep legacy database names while allowing explicitly owned core containers."""
+    targets = []
+    names = set()
+    for entry in cfg["databases"]:
+        target = {"database": entry, "name": entry,
+                  "container": cfg["database_container"], "project": cfg["project"],
+                  "owner": cfg["database_owner"]} if isinstance(entry, str) else dict(entry)
+        if not all(isinstance(target.get(key), str) and target[key]
+                   for key in ("database", "name", "container", "project", "owner")):
+            raise RuntimeError("Backup target requires database, name, container, project and owner")
+        if not re.fullmatch(r"[a-z_]+", target["database"]):
+            raise RuntimeError("Invalid configured database")
+        if not re.fullmatch(r"[a-z][a-z0-9_-]*", target["name"]) or target["name"] in names:
+            raise RuntimeError("Backup names must be safe and unique")
+        names.add(target["name"])
+        targets.append(target)
+    if not targets:
+        raise RuntimeError("No backup databases configured")
+    return targets
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=["monitor", "replay", "backup"])
@@ -41,10 +63,14 @@ def main():
     root = Path(cfg["root"]).resolve()
     state = Path(cfg["state"]).resolve()
     state.mkdir(mode=0o700, parents=True, exist_ok=True)
-    lock = (state / "maintenance.lock").open("a")
     # Queue this deployment's jobs; a timed monitor can overlap a checkpoint.
     # Keep the shared lock intact until the active owner completes.
-    fcntl.flock(lock, fcntl.LOCK_EX)
+    with (state / "maintenance.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        maintain(args.action, cfg, root, state)
+
+
+def maintain(action, cfg, root, state):
     docker = cfg.get("docker", ["docker"])
     project = cfg["project"]
     database = cfg["database_container"]
@@ -52,16 +78,18 @@ def main():
     if inspect["Config"]["Labels"].get("com.docker.compose.project") != project:
         raise RuntimeError("Database belongs to another deployment")
 
-    def sql(db, query):
+    def sql(db, query, target=None):
         if not re.fullmatch(r"[a-z_]+", db):
             raise RuntimeError("Invalid configured database")
-        return run(docker + ["exec", database, "psql", "-v", "ON_ERROR_STOP=1",
-                            "-U", cfg["database_owner"], "-d", db, "-Atc", query],
+        container = target["container"] if target else database
+        owner = target["owner"] if target else cfg["database_owner"]
+        return run(docker + ["exec", container, "psql", "-v", "ON_ERROR_STOP=1",
+                            "-U", owner, "-d", db, "-Atc", query],
                    text=True).strip()
 
     now = datetime.datetime.now(datetime.timezone.utc)
-    result = {"action": args.action, "observed_at": now.isoformat(), "project": project}
-    if args.action == "monitor":
+    result = {"action": action, "observed_at": now.isoformat(), "project": project}
+    if action == "monitor":
         observations = []
         for site in cfg["sites"]:
             # A seekable output file lets curl discard a failed response before
@@ -89,7 +117,7 @@ def main():
             observations.append({"url": site["url"], "total": data.get("total"),
                                  "audience": data.get("audience"), "public": data.get("public")})
         result["sites"] = observations
-    elif args.action == "replay":
+    elif action == "replay":
         results = []
         core = json.loads(run(docker + ["inspect", cfg["core_container"]]))[0]
         if core["Config"]["Labels"].get("com.docker.compose.project") != project:
@@ -122,6 +150,11 @@ def main():
             results.append({"database": job["database"], "collection": scope, "saved": True})
         result["replays"] = results
     else:
+        targets = backup_targets(cfg)
+        for target in targets:
+            owned = json.loads(run(docker + ["inspect", target["container"]]))[0]
+            if owned["Config"]["Labels"].get("com.docker.compose.project") != target["project"]:
+                raise RuntimeError("Backup database belongs to another deployment")
         checkpoints = state / "checkpoints"
         checkpoints.mkdir(mode=0o700, exist_ok=True)
         used = sum(p.stat().st_size for p in checkpoints.rglob("*") if p.is_file())
@@ -135,22 +168,27 @@ def main():
         destination = checkpoints / now.strftime("public-%Y%m%dT%H%M%SZ")
         destination.mkdir(mode=0o700)
         entries = []
-        for db in cfg["databases"]:
+        for target in targets:
+            db = target["database"]
             tables = sql(db, "SELECT schemaname||'.'||tablename FROM pg_tables WHERE "
-                         "schemaname='public' OR schemaname LIKE 'rollout_stage_%' ORDER BY 1").splitlines()
+                         "schemaname='public' OR schemaname LIKE 'rollout_stage_%' ORDER BY 1",
+                         target).splitlines()
             counts = {}
             for table in tables:
                 if not re.fullmatch(r"[a-z_]+\.[a-z_]+", table):
                     raise RuntimeError("Unexpected table identifier")
-                counts[table] = int(sql(db, "SELECT count(*) FROM " + table))
-            path = destination / (db + ".dump")
+                counts[table] = int(sql(db, "SELECT count(*) FROM " + table, target))
+            path = destination / (target["name"] + ".dump")
             with path.open("wb") as stream:
-                p = subprocess.run(docker + ["exec", database, "pg_dump", "-U", cfg["database_owner"],
+                p = subprocess.run(docker + ["exec", target["container"], "pg_dump", "-U", target["owner"],
                                             "-d", db, "-Fc"], stdout=stream, stderr=subprocess.PIPE)
             if p.returncode:
                 raise RuntimeError("Public catalog checkpoint failed")
             path.chmod(0o600)
+            with path.open("rb") as stream:
+                run(docker + ["exec", "-i", target["container"], "pg_restore", "--list"], stdin=stream)
             entries.append({"database": db, "filename": path.name, "bytes": path.stat().st_size,
+                            "container": target["container"], "project": target["project"],
                             "sha256": digest(path), "table_counts": counts})
         manifest = {"format": 1, "owner": project, "observed_at": now.isoformat(), "databases": entries,
                     "media": "Immutable originals retain their separately verified independent backups"}
@@ -160,7 +198,8 @@ def main():
         remote_dir = mirror["path"].rstrip("/") + "/" + destination.name
         run(["ssh", mirror["host"], "mkdir -p -m 700 " + shlex.quote(remote_dir)])
         for path in destination.iterdir():
-            run(["scp", "-q", str(path), mirror["host"] + ":" + remote_dir + "/"])
+            scp = ["scp", "-O"] if mirror.get("legacy_scp", False) else ["scp"]
+            run(scp + ["-q", str(path), mirror["host"] + ":" + remote_dir + "/"])
         for entry in entries:
             remote = run(["ssh", mirror["host"], "sha256sum " + shlex.quote(remote_dir + "/" + entry["filename"])], text=True)
             if remote.split()[0] != entry["sha256"]:
@@ -168,7 +207,7 @@ def main():
         result.update({"checkpoint": str(destination), "mirror": mirror["host"] + ":" + remote_dir,
                        "independent_metadata_checksums_match": True, "databases": len(entries),
                        "restore_verified": False})
-    (state / (args.action + ".json")).write_text(json.dumps(result, indent=2) + "\n")
+    (state / (action + ".json")).write_text(json.dumps(result, indent=2) + "\n")
     print(json.dumps(result))
 
 

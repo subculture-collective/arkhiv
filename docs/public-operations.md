@@ -32,6 +32,36 @@ those remote hashes. Copy success explicitly records `restore_verified=false`.
 Restore each dump into a fresh independently owned database and compare every
 manifest count before recording recovery qualification.
 
+The `databases` array accepts existing database-name strings and explicit targets
+for cores with their own Compose database containers. Explicit targets require
+all five fields; `name` is the unique dump filename stem, so two cores may both
+use a database called `arkhiv`:
+
+```json
+{
+  "database": "arkhiv",
+  "name": "riot-grrrl-core",
+  "container": "riot-grrrl-core-db-1",
+  "project": "riot-grrrl-core",
+  "owner": "arkhiv"
+}
+```
+
+Use the same fields with `anarchist-core` for Anarchist. Each target's container
+must match its configured Compose project before any dump starts. All dumps pass
+`pg_restore --list` before transfer. The manifest records each source container
+and project, and the existing mirror and retention apply to the entire checkpoint.
+Set `mirror.legacy_scp` to `true` when the restricted backup SSH endpoint requires
+the SCP protocol instead of SFTP. It defaults to `false` for existing configurations.
+
+Before folding a site's local nightly timer into this job, run the extended job,
+fetch a core dump back from the independent host, restore it into a disposable
+PostgreSQL instance, and compare its manifest table counts. Disable the duplicate
+local timer only after that recovery check passes. Keep pre-deploy backups.
+Table counts are observations made before each dump, not a transactionally shared
+snapshot; schedule a quiet period or reconcile any concurrent writes during the
+restore check. The dump itself uses PostgreSQL's consistent snapshot.
+
 All actions share a blocking maintenance lock. Jobs queue behind the current
 owner; do not delete or bypass that lock. The checkpoint budget fails closed and
 requires an operator retention review when exhausted. It never prunes recovery
