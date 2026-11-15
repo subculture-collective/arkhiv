@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,6 +23,15 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+type queryCounter struct{ count atomic.Int64 }
+
+func (q *queryCounter) TraceQueryStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryStartData) context.Context {
+	q.count.Add(1)
+	return ctx
+}
+
+func (q *queryCounter) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
 // Synthetic PCM audio verifies bytes, duration and scheduling, not music fidelity.
 func tone(seconds int) []byte {
@@ -66,6 +76,8 @@ func TestContinuousAudioRightsAndStationIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg.ConnConfig.RuntimeParams["search_path"] = schema
+	queries := &queryCounter{}
+	cfg.ConnConfig.Tracer = queries
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -151,16 +163,38 @@ func TestContinuousAudioRightsAndStationIntegration(t *testing.T) {
 		"/api/recordings?date_from=1977-05-09&date_to=1977-05-08": "The original-date range is reversed.",
 		"/api/recordings?page=10001":                              "That page is past the end of the shelf.",
 		"/api/recordings/absent":                                  "That tape isn't in the library.",
+		"/api/audio/absent":                                       "That tape isn't in the library.",
 		"/api/dates/1977-5-8":                                     "That isn't a date the calendar can read.",
 		"/api/calendar?year=next":                                 "That year isn't on the calendar.",
 	} {
 		status := 400
-		if strings.HasPrefix(path, "/api/recordings/") {
+		if strings.HasPrefix(path, "/api/recordings/") || strings.HasPrefix(path, "/api/audio/") {
 			status = 404
 		}
 		if w := get(path, nil); w.Code != status || legacyError(w) != want {
 			t.Fatal("legacy error wording", path, w.Code, w.Body.String())
 		}
+	}
+	// Repeating recordings in a week's schedule must not multiply database
+	// reads. Rights are still refreshed on every request, including future plays.
+	before := queries.count.Load()
+	if w := get("/api/station", nil); w.Code != 200 {
+		t.Fatal("baseline station", w.Code, w.Body.String())
+	}
+	baselineQueries := queries.count.Load() - before
+	schedule.Revision = "repeated-fixture-station"
+	for i := 2; i < 90; i++ {
+		schedule.Programs = append(schedule.Programs, domain.AudioProgram{Item: "first", Representation: rep.ID, Start: now.Add(time.Duration(i*2) * time.Second), Duration: 2})
+	}
+	if err = db.StoreAudioSchedule(ctx, schedule, "Repeated synthetic station programs"); err != nil {
+		t.Fatal(err)
+	}
+	before = queries.count.Load()
+	if w := get("/api/station", nil); w.Code != 200 {
+		t.Fatal("repeated station", w.Code, w.Body.String())
+	}
+	if used := queries.count.Load() - before; used > baselineQueries {
+		t.Fatalf("repeated programs multiplied station queries: %d versus %d", used, baselineQueries)
 	}
 	// A request whose database reads fail reports Dedhed's unavailable wording.
 	canceled, cancel := context.WithCancel(ctx)
@@ -235,7 +269,7 @@ func TestContinuousAudioRightsAndStationIntegration(t *testing.T) {
 	if err = os.WriteFile(filepath.Join(derived, "continuous.wav"), sameSize, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if w := get("/api/audio/first", map[string]string{"Range": "bytes=0-43"}); w.Code != 503 {
+	if w := get("/api/audio/first", map[string]string{"Range": "bytes=0-43"}); w.Code != 503 || legacyError(w) != "audio source unavailable; choose another recording or retry" {
 		t.Fatal("changed derivative served from earlier verification", w.Code)
 	}
 	if w := get("/api/station", nil); w.Code != 503 || legacyError(w) != offAir {
@@ -306,7 +340,7 @@ func TestContinuousAudioRightsAndStationIntegration(t *testing.T) {
 	if err = db.ReviewTransport(ctx, "first", rep.ID, c.ID, review, approval); err != nil {
 		t.Fatal(err)
 	}
-	if w := get("/api/audio/first", map[string]string{"If-None-Match": `"` + asset.SHA256 + `"`}); w.Code != 404 {
+	if w := get("/api/audio/first", map[string]string{"If-None-Match": `"` + asset.SHA256 + `"`}); w.Code != 404 || legacyError(w) != "That tape isn't in the library." {
 		t.Fatal("legacy conditional media ignored withdrawal", w.Code)
 	}
 	if w := get("/api/recordings/first", nil); w.Code != 404 || legacyError(w) != "That tape isn't in the library." {

@@ -27,6 +27,7 @@ const (
 	legacyDateBounds          = "Use complete YYYY-MM-DD date bounds."
 	legacyReversedRange       = "The original-date range is reversed."
 	legacyPastShelf           = "That page is past the end of the shelf."
+	legacyMissingRecording    = "That tape isn't in the library."
 )
 
 // Audio compatibility adapts the retained Dedhed contract to the same scoped
@@ -93,7 +94,7 @@ func (s *Server) legacyRecordings(w http.ResponseWriter, r *http.Request) {
 	if id := r.PathValue("id"); id != "" {
 		e, ok := entries[id]
 		if !ok {
-			write(w, 404, map[string]string{"error": "That tape isn't in the library."})
+			write(w, 404, map[string]string{"error": legacyMissingRecording})
 			return
 		}
 		write(w, 200, e)
@@ -178,22 +179,22 @@ func (s *Server) legacyAudioMapping(r *http.Request, id string) (string, string,
 func (s *Server) legacyAudioMedia(w http.ResponseWriter, r *http.Request) {
 	item, rep, err := s.legacyAudioMapping(r, r.PathValue("id"))
 	if err != nil {
-		write(w, 404, map[string]string{"error": "audio unavailable"})
+		write(w, 404, map[string]string{"error": legacyMissingRecording})
 		return
 	}
 	c, err := s.audioCollection(r)
 	if err != nil {
-		write(w, 404, map[string]string{"error": "audio unavailable"})
+		write(w, 404, map[string]string{"error": legacyMissingRecording})
 		return
 	}
 	e, a, err := s.audioEntry(r, item, rep, c, domain.PlayAction)
 	if err != nil {
-		write(w, 404, map[string]string{"error": "audio unavailable"})
+		write(w, 404, map[string]string{"error": legacyMissingRecording})
 		return
 	}
 	f, err := audiomodule.Verify(&s.AudioFiles, s.Media, s.Derivatives, e, a, domain.PlayAction)
 	if err != nil {
-		write(w, 503, map[string]string{"error": "audio source unavailable"})
+		write(w, 503, map[string]string{"error": "audio source unavailable; choose another recording or retry"})
 		return
 	}
 	defer f.Close()
@@ -228,9 +229,27 @@ func (s *Server) legacyStation(w http.ResponseWriter, r *http.Request) {
 	}
 	legacy := music.Schedule{Revision: schedule.Revision, Programs: []music.Program{}}
 	entries := map[string]music.Entry{}
+	// A schedule repeats recordings. Resolve each transport once per request,
+	// while refreshing all current and future rights on the next poll.
+	type stationRecording struct {
+		entry catalog.TransportEntry
+		asset domain.AudioAsset
+	}
+	resolved := map[[2]string]stationRecording{}
 	for _, p := range schedule.Programs {
-		e, a, err := s.audioEntry(r, p.Item, p.Representation, c, domain.ScheduleAction)
-		if err != nil || p.Duration > a.Duration || e.Representation.Extension.Audio == nil || e.Representation.Extension.Audio.Recording == nil {
+		key := [2]string{p.Item, p.Representation}
+		record, ok := resolved[key]
+		if !ok {
+			e, a, err := s.audioEntry(r, p.Item, p.Representation, c, domain.ScheduleAction)
+			if err != nil {
+				write(w, 503, map[string]string{"error": legacyOffAir})
+				return
+			}
+			record = stationRecording{entry: e, asset: a}
+			resolved[key] = record
+		}
+		e, a := record.entry, record.asset
+		if p.Duration > a.Duration || e.Representation.Extension.Audio == nil || e.Representation.Extension.Audio.Recording == nil {
 			write(w, 503, map[string]string{"error": legacyOffAir})
 			return
 		}

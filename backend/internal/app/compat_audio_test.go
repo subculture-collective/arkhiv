@@ -2,11 +2,28 @@ package app
 
 import (
 	"fmt"
+	"net/http/httptest"
 	"net/url"
 	"testing"
 
 	"git.subcult.tv/subculture-collective/vhness/internal/music"
 )
+
+func TestLegacyAudioUnmatchedRoutesAreNotCached(t *testing.T) {
+	server := &Server{Compatibility: "audio"}
+	for _, request := range []struct{ method, path string }{
+		{"GET", "/api/nope"}, {"GET", "/api/recordings/"},
+		{"POST", "/api/recordings"},
+	} {
+		t.Run(request.method+request.path, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			server.Handler().ServeHTTP(w, httptest.NewRequest(request.method, request.path, nil))
+			if w.Code < 400 || w.Header().Get("Cache-Control") != "no-store" {
+				t.Fatal("legacy routing error cache policy", w.Code, w.Header())
+			}
+		})
+	}
+}
 
 func TestLegacyRecordingFiltersBeforePagination(t *testing.T) {
 	entries := map[string]music.Entry{}
