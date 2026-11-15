@@ -189,6 +189,10 @@ func (s *Server) Handler() http.Handler {
 		})
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.Compatibility == "audio" {
+			w.Header().Set("Cache-Control", "no-store")
+			w.Header().Set("X-Content-Type-Options", "nosniff")
+		}
 		if s.DB != nil && s.DB.PublicOnly && r.URL.Path == "/api/status" {
 			write(w, 404, map[string]string{"error": "unknown API route"})
 			return

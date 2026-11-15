@@ -2,6 +2,11 @@
 
 ## Shared print, audio and video platform
 
+November 15 follow-up: [Dedhed's copy-only rehearsal](docs/reports/dedhed-rehearsal-2026-11-15.md)
+fixes core response compatibility and repeated station queries. The candidate
+matches current Dedhed source after build/multipart normalization; differences
+from the older production filters remain an explicit cutover gate.
+
 Arkhiv is the canonical shared product, built from repository ID 242, formerly
 VHNESS. Arkhiv is a headless core with a versioned HTTP API. End users own the
 entire frontend and may use any framework. The reference app, published React
