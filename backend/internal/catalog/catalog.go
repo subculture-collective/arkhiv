@@ -128,14 +128,14 @@ func (d *DB) Collection(ctx context.Context, c domain.Collection) error {
 	}
 	// Existing policy is immutable; changing storage ownership requires a new reviewed migration.
 	var existing domain.Collection
-	err := d.Pool.QueryRow(ctx, `SELECT id,policy,budget,reserve,source_item FROM collections WHERE id=$1`, c.ID).Scan(&existing.ID, &existing.Policy, &existing.Budget, &existing.Reserve, &existing.SourceItem)
+	err := d.Pool.QueryRow(ctx, `SELECT id,policy,budget,reserve,source_item,source_collection FROM collections WHERE id=$1`, c.ID).Scan(&existing.ID, &existing.Policy, &existing.Budget, &existing.Reserve, &existing.SourceItem, &existing.SourceCollection)
 	if err == nil && existing != c {
 		return fmt.Errorf("existing collection policy or budget cannot be changed implicitly")
 	}
 	if err != nil && err != pgx.ErrNoRows {
 		return err
 	}
-	_, err = d.Pool.Exec(ctx, `INSERT INTO collections(id,policy,budget,reserve,source_item) VALUES($1,$2,$3,$4,$5) ON CONFLICT(id) DO NOTHING`, c.ID, c.Policy, c.Budget, c.Reserve, c.SourceItem)
+	_, err = d.Pool.Exec(ctx, `INSERT INTO collections(id,policy,budget,reserve,source_item,source_collection) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(id) DO NOTHING`, c.ID, c.Policy, c.Budget, c.Reserve, c.SourceItem, c.SourceCollection)
 	if err != nil {
 		return err
 	}
@@ -144,7 +144,7 @@ func (d *DB) Collection(ctx context.Context, c domain.Collection) error {
 }
 func (d *DB) GetCollection(ctx context.Context, id string) (domain.Collection, error) {
 	var c domain.Collection
-	err := d.Pool.QueryRow(ctx, `SELECT id,policy,budget,reserve,source_item FROM collections WHERE id=$1`, id).Scan(&c.ID, &c.Policy, &c.Budget, &c.Reserve, &c.SourceItem)
+	err := d.Pool.QueryRow(ctx, `SELECT id,policy,budget,reserve,source_item,source_collection FROM collections WHERE id=$1`, id).Scan(&c.ID, &c.Policy, &c.Budget, &c.Reserve, &c.SourceItem, &c.SourceCollection)
 	return c, err
 }
 

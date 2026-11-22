@@ -1,3 +1,10 @@
+## Unreleased
+
+`representationURL` rejects only `.` and `..` path segments, raw or
+percent-encoded, instead of any `..` in the URL. Local originals whose names
+contain dots, such as `Track.. name.mp3`, now resolve; a local original's
+file must be a single name. Works with any core that serves local originals.
+
 ## 0.4.13
 
 The root entry exports the viewer tools that the Bill Nye and Democracy Now!

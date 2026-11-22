@@ -62,6 +62,17 @@ type Collection struct {
 	Budget     int64  `json:"budget_bytes"`
 	Reserve    int64  `json:"reserve_bytes"`
 	SourceItem string `json:"source_item,omitempty"`
+	// SourceCollection is the Internet Archive collection whose source catalog
+	// this collection imports. Empty means the collection's own identifier.
+	SourceCollection string `json:"source_collection,omitempty"`
+}
+
+// ArchiveCollection is the source collection that catalog discovery queries.
+func (c Collection) ArchiveCollection() string {
+	if c.SourceCollection != "" {
+		return c.SourceCollection
+	}
+	return c.ID
 }
 
 func (c Collection) Validate() error {
@@ -71,7 +82,10 @@ func (c Collection) Validate() error {
 	if c.SourceItem != "" && (!ValidID(c.SourceItem) || c.Policy != Local || c.SourceItem == DemocracyNow) {
 		return fmt.Errorf("file-based item requires an explicitly local source item")
 	}
-	if c.ID == DemocracyNow && (c.Policy != Stream || c.SourceItem != "") {
+	if c.SourceCollection != "" && (!ValidID(c.SourceCollection) || c.SourceCollection == c.ID) {
+		return fmt.Errorf("source collection must be a different valid collection identity")
+	}
+	if (c.ID == DemocracyNow || c.SourceCollection == DemocracyNow) && (c.Policy != Stream || c.SourceItem != "") {
 		return fmt.Errorf("Democracy Now! must remain source-streaming only")
 	}
 	if c.Policy == Local && (c.Budget <= 0 || c.Reserve <= 0) {

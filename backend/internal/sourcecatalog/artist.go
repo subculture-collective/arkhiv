@@ -177,7 +177,7 @@ func (s *Store) ImportArtist(ctx context.Context, artist string, bundle ArtistBu
 	if archive != "" {
 		// The collection must be this catalog's own subcollection and hold at
 		// least one of the artist's visible recordings.
-		if ia == nil || ia["identifier"] != archive || ia["mediatype"] != "collection" || Text(ia["title"]) == "" || !containsText(ia["collection"], s.Collection) {
+		if ia == nil || ia["identifier"] != archive || ia["mediatype"] != "collection" || Text(ia["title"]) == "" || !containsText(ia["collection"], s.archiveCollection()) {
 			return fmt.Errorf("retained archive collection response does not match the reviewed identity")
 		}
 		var holds bool

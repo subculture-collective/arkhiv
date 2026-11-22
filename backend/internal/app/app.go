@@ -41,8 +41,9 @@ type Server struct {
 	resolutionFailure *ResolutionFailure
 	summaryCache      summaryCache
 	loadSummaries     func(context.Context) (map[string]domain.Entry, error)
-	// AudioFiles keeps audio inputs and derivatives verified across requests,
-	// so playback and station polls do not hash whole files each time.
+	// AudioFiles keeps audio inputs, derivatives and reviewed local originals
+	// verified across requests, so playback, seeks and station polls do not
+	// hash whole files each time.
 	AudioFiles preservation.VerifiedFiles
 }
 type ResolutionFailure struct {

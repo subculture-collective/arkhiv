@@ -17,6 +17,10 @@ var ErrUnsupportedAudio = errors.New("no bounded, supported public audio files w
 
 // ReviewAudio is a distinct operator decision. Metadata import never grants
 // playback, downloads, acquisition, scheduling, relay or public visibility.
+// For a source_stream collection playback resolves to the source. For a
+// local_preserve collection every selected file must already be a verified
+// original under Media, listed in the independent Recovery receipt; the review
+// then records the preservation manifest and the engine serves the originals.
 func (s *Store) ReviewAudio(ctx context.Context, id, notes string) error {
 	if !domain.ValidID(id) || strings.TrimSpace(notes) == "" || len(notes) > 4000 {
 		return fmt.Errorf("source identity and bounded playback review notes required")
@@ -24,9 +28,6 @@ func (s *Store) ReviewAudio(ctx context.Context, id, notes string) error {
 	collection, err := s.Core.GetCollection(ctx, s.Collection)
 	if err != nil {
 		return err
-	}
-	if collection.Policy != domain.Stream {
-		return fmt.Errorf("source audio review requires a source-streaming collection; local preservation uses the existing manifest workflow")
 	}
 	detail, err := s.Detail(ctx, id)
 	if err != nil {
@@ -84,6 +85,21 @@ func (s *Store) ReviewAudio(ctx context.Context, id, notes string) error {
 	})
 	if len(files) == 0 || len(files) > 1000 {
 		return ErrUnsupportedAudio
+	}
+	approval := domain.PreservationApproval{}
+	if collection.Policy == domain.Local {
+		democracy, err := domain.DemocracyIdentity(collection, domain.Representation{SourceItemID: id}, raw)
+		if err != nil {
+			return err
+		}
+		if democracy {
+			return fmt.Errorf("Democracy source must remain source-streaming")
+		}
+		manifest, err := s.localManifest(ctx, collection, id, files)
+		if err != nil {
+			return err
+		}
+		approval = domain.PreservationApproval{Snapshot: detail["snapshot_sha256"].(string), Manifest: manifest, IndependentRecoverySHA256: s.Recovery.SHA256()}
 	}
 	var fields map[string]string
 	if err = json.Unmarshal(detail["metadata"].(json.RawMessage), &fields); err != nil {
@@ -146,7 +162,7 @@ func (s *Store) ReviewAudio(ctx context.Context, id, notes string) error {
 			return err
 		}
 	}
-	return s.Core.ReviewTransport(ctx, itemID, "audio", s.Collection, domain.TransportReview{Snapshot: hash, Files: names, Playback: true, Notes: notes}, domain.PreservationApproval{})
+	return s.Core.ReviewTransport(ctx, itemID, "audio", s.Collection, domain.TransportReview{Snapshot: hash, Files: names, Playback: true, Notes: notes}, approval)
 }
 
 func sourceFilename(value any) string { text, _ := value.(string); return text }

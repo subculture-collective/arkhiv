@@ -10,7 +10,6 @@ import (
 
 	"git.subcult.tv/subculture-collective/vhness/internal/catalog"
 	"git.subcult.tv/subculture-collective/vhness/internal/domain"
-	"git.subcult.tv/subculture-collective/vhness/internal/preservation"
 )
 
 func (s *Server) authorizedTransport(r *http.Request) (catalog.TransportEntry, domain.Action, string, error) {
@@ -112,7 +111,9 @@ func (s *Server) representationMedia(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-	f, err := preservation.Verify(s.Media, original.Path, original.SHA256, original.Bytes)
+	// The cache hashes an original once and trusts it while its file identity
+	// is unchanged, so each Range request of a seek does not reread the file.
+	f, err := s.AudioFiles.Verify(s.Media, original.Path, original.SHA256, original.Bytes)
 	if err != nil {
 		write(w, 503, map[string]string{"error": "local original failed integrity check"})
 		return

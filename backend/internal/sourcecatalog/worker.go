@@ -121,7 +121,7 @@ func (s *Store) Run(ctx context.Context, client *source.Client, pages, batch int
 		return err
 	}
 	for n := 0; n < pages && !complete; n++ {
-		page, response, err := client.DiscoverCatalog(ctx, s.Collection, cursor)
+		page, response, err := client.DiscoverCatalog(ctx, s.archiveCollection(), cursor)
 		if err != nil {
 			return err
 		}
@@ -179,7 +179,7 @@ func (s *Store) Run(ctx context.Context, client *source.Client, pages, batch int
 				if strings.TrimSpace(string(response.Raw)) == "{}" {
 					fetchErr = fmt.Errorf("source metadata is unavailable")
 					state = "unavailable"
-				} else if _, _, err = Normalize(s.Collection, id, response.Raw); err != nil {
+				} else if _, _, err = Normalize(s.archiveCollection(), id, response.Raw); err != nil {
 					// Preserve rejected source bytes as well as the rejection observation.
 					if saveErr := s.Core.Snapshot(ctx, id, response.Raw, response.Status, response.ETag, response.Modified, nil); saveErr != nil {
 						return saveErr

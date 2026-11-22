@@ -77,8 +77,10 @@ conditional/Range handling and verifies file size/hash beneath `os.OpenRoot`.
 This initial adapter serves compatible originals directly and retains all source
 file metadata. It does not create remuxes/transcodes or acquire caption sidecars;
 these require a separately budgeted processing/manifest extension before a real
-collection needing them can qualify. Each local HTTP request hashes its original;
-large-file performance has not been qualified.
+collection needing them can qualify. Each local HTTP request checks the review;
+the server hashes an original once and rehashes it when its file identity
+changes or after 24 hours, so Range requests and seeks do not reread it.
+Large-file performance has not been qualified.
 
 `scripts/recovery.py --host nuc --destination /home/onnwee/Backups/vhness-private-pilot`
 creates a consistent PostgreSQL custom dump, restores it to an isolated temporary
