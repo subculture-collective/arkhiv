@@ -1,4 +1,4 @@
-## Unreleased
+## 0.4.14
 
 `representationURL` rejects only `.` and `..` path segments, raw or
 percent-encoded, instead of any `..` in the URL. Local originals whose names
