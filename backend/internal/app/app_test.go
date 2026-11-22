@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http/httptest"
@@ -153,6 +154,33 @@ func TestPrivatePlaybackAndMediaIntegration(t *testing.T) {
 	}
 	if w := get(transportPath+"/media", map[string]string{"Range": "bytes=2-6"}); w.Code != 206 || w.Body.String() != string(pdf[2:7]) {
 		t.Fatal("reviewed print range", w.Code, w.Body.String())
+	}
+	// Seeks reuse the verified original rather than rehashing it per request.
+	// Files written within the last second are always rehashed, so let it age.
+	time.Sleep(1100 * time.Millisecond)
+	cold := server.AudioFiles.Hashed()
+	if w := get(transportPath+"/media", nil); w.Code != 200 {
+		t.Fatal("warm local original", w.Code)
+	}
+	warm := server.AudioFiles.Hashed()
+	if warm == cold {
+		t.Fatal("local media bypassed the verified-file state")
+	}
+	for i := 0; i < 3; i++ {
+		if w := get(transportPath+"/media", map[string]string{"Range": "bytes=2-6"}); w.Code != 206 || w.Body.String() != string(pdf[2:7]) {
+			t.Fatal("verified local range", w.Code, w.Body.String())
+		}
+	}
+	if hashed := server.AudioFiles.Hashed(); hashed != warm {
+		t.Fatal("unchanged local original reread per range request", warm, hashed)
+	}
+	tampered := bytes.Clone(pdf)
+	tampered[len(tampered)-1] ^= 0xff
+	if err = os.WriteFile(filepath.Join(root, "talk.pdf"), tampered, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if w := get(transportPath+"/media", map[string]string{"Range": "bytes=2-6"}); w.Code != 503 {
+		t.Fatal("changed local original served from the verified state", w.Code)
 	}
 	if w := get(transportPath+"/media?action=download", nil); w.Code != 404 {
 		t.Fatal("reading inherited download", w.Code)

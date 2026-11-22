@@ -47,7 +47,7 @@ inventory is unavailable in public mode; public consumers retain the existing
 reviewed catalog and transport API.
 
 `review-source-audio --collection COLLECTION --id ID --notes 'Playback review'`
-is a separate explicit operator action for a source-streaming collection. It maps
+is a separate explicit operator action. It maps
 supported public files with safe filenames into the existing typed audio catalog,
 then creates an exact snapshot/file-bound playback review. It grants no acquisition,
 download, relay, scheduling or public access. It prefers MP3, M4A, Ogg, FLAC and WAV
@@ -57,12 +57,34 @@ variants and orders filenames naturally. Core 0.4.1 accepts safe nested audio
 source paths and escapes each URL segment. Traversal, absolute paths, backslashes
 and control characters are rejected. Local preservation retains its existing
 root-filename contract.
-Playback uses the existing representation resolver and a browser-to-source URL.
+In a source-streaming collection, playback uses the existing representation
+resolver and a browser-to-source URL.
 
 Changed source snapshots or recorded withdrawals invalidate those mappings until
 an operator re-reviews them. Re-review preserves source and decision history.
-Local preservation continues to use the existing manifest, quota, integrity and
-independent recovery workflow; the metadata worker never performs acquisition.
+The metadata worker never performs acquisition.
+
+### Local source audio
+
+In a `local_preserve` collection the same commands approve originals that the
+operator has already copied to the host; the engine then serves them from
+`/media` instead of the source. Both commands require `--recovery-receipt` and
+an absolute `VHNESS_MEDIA`. They select tracks by the same rules, then require
+every selected file at `$VHNESS_MEDIA/<collection>/<identifier>/<file name>`
+with the size and MD5 in the retained source snapshot, and in the receipt with
+the same size and SHA-256. The review records play only, a manifest of every
+file (name, bytes, SHA-256, path) and the receipt's SHA-256 as
+`independent_recovery_sha256`. A source with a missing, changed or unrecorded
+file is not approved at all: the batch reports it under `skipped` and retries it
+after an hour, and a single-item review can be repeated at once. A selected file
+without a source size and MD5, or with a nested path, makes the source
+unsupported. Review refuses when the collection directory exceeds its byte
+budget or the volume's free space is below the reserve, as acquisition does.
+Commands never fetch media. Democracy Now! sources are refused.
+
+A local collection imports the source catalog of the source-streaming
+collection it copies through `collection --source-collection`. See the
+[local source audio runbook](../runbooks/local-source-audio.md).
 
 `review-source-audio-batch --collection COLLECTION --items 100 --timeout 10m
 --notes 'Owner approved private source playback'` explicitly approves a bounded

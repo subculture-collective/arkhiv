@@ -102,6 +102,21 @@ test('mixed-media filters and share links preserve collection and exact logical 
  expect(catalogFavoriteID('print:item')).toBe('catalog:print:item');
 });
 
+test('local originals may have dots inside a file name but not dot segments',()=>{
+ const file='Track.. name.mp3';
+ const media='/api/catalog/v1/items/audio-1/representations/audio/media';
+ const local={...asset,media:'audio' as const,file,url:`${media}?${new URLSearchParams({collection:'dj-screw-discography-local',action:'play',file})}`};
+ expect(representationURL(local)).toBe(local.url);
+ expect(representationURL({...local,file:'..Track.mp3',url:local.url.replace('Track..+name.mp3','..Track.mp3')})).toBe(local.url.replace('Track..+name.mp3','..Track.mp3'));
+ for (const value of [
+  {...local,url:local.url.replace('/items/audio-1/','/items/../')},
+  {...local,url:local.url.replace('/items/audio-1/','/items/%2e%2e/')},
+  {...local,url:local.url.replace('/representations/audio/','/representations/./')},
+  {...local,file:'..',url:`${media}?collection=c&action=play&file=..`},
+  {...local,file:'disc/song.mp3',url:`${media}?collection=c&action=play&file=disc%2Fsong.mp3`},
+ ]) expect(()=>representationURL(value)).toThrow();
+});
+
 test('accepts only exact safe nested source audio paths',()=>{
  const audio={...asset,media:'audio' as const,policy:'source_stream',file:'disc 1/01  song.mp3',url:'https://archive.org/download/paper/disc%201/01%20%20song.mp3'};
  expect(representationURL(audio)).toBe(audio.url);
@@ -110,5 +125,6 @@ test('accepts only exact safe nested source audio paths',()=>{
   expect(()=>representationURL({...audio,file,url:'https://archive.org/download/paper/'+file.split('/').map(encodeURIComponent).join('/')})).toThrow();
  }
  expect(()=>representationURL({...audio,file:'disc 1/another.mp3'})).toThrow();
+ expect(()=>representationURL({...audio,file:'song.mp3',url:'https://archive.org/download/paper/disc/%2e%2e/song.mp3'})).toThrow();
  expect(()=>representationURL({...audio,media:'print'})).toThrow();
 });

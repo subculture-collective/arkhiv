@@ -20,20 +20,38 @@ import (
 type Store struct {
 	Core       *catalog.DB
 	Collection string
+	// Media is the absolute preservation root (VHNESS_MEDIA). Only source-audio
+	// review for a local_preserve collection reads it.
+	Media string
+	// Recovery is the parsed independent-copy receipt that local source-audio
+	// review requires; see ParseRecoveryReceipt.
+	Recovery *RecoveryReceipt
+	// source is the Internet Archive collection Init found for Collection.
+	source string
 }
 
 func (s *Store) Init(ctx context.Context) error {
 	if !domain.ValidID(s.Collection) {
 		return fmt.Errorf("invalid collection")
 	}
-	if _, err := s.Core.GetCollection(ctx, s.Collection); err != nil {
+	c, err := s.Core.GetCollection(ctx, s.Collection)
+	if err != nil {
 		return err
 	}
-	_, err := s.Core.Pool.Exec(ctx, `INSERT INTO source_catalog_worker_state(collection_id) VALUES($1) ON CONFLICT DO NOTHING`, s.Collection)
+	s.source = c.ArchiveCollection()
+	_, err = s.Core.Pool.Exec(ctx, `INSERT INTO source_catalog_worker_state(collection_id) VALUES($1) ON CONFLICT DO NOTHING`, s.Collection)
 	return err
 }
+
+// archiveCollection is the source collection whose items this store imports.
+func (s *Store) archiveCollection() string {
+	if s.source != "" {
+		return s.source
+	}
+	return s.Collection
+}
 func (s *Store) Import(ctx context.Context, id string, raw []byte, status int, etag, modified string) error {
-	normalized, rules, err := Normalize(s.Collection, id, raw)
+	normalized, rules, err := Normalize(s.archiveCollection(), id, raw)
 	if err != nil {
 		return err
 	}

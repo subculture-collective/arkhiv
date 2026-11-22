@@ -81,6 +81,8 @@ func run() error {
 	collection := f.String("collection", allowlist.Default(), "collection identity; explicit for a multi-collection operator action")
 	file := f.String("file", "", "JSON input")
 	sourceItem := f.String("source-item", "", "explicit multi-file source movie item")
+	sourceCollection := f.String("source-collection", "", "Internet Archive collection whose source catalog a new collection imports, when it differs from the collection identity")
+	recoveryReceipt := f.String("recovery-receipt", "", "independent-copy receipt (JSON) required by local source-audio review")
 	episodeFile := f.String("episode-file", "", "exact file to materialize from a selected source item")
 	synthetic := f.Bool("synthetic", false, "explicit generated local fixture metadata")
 	fixtureOriginal := f.String("fixture-original", "", "generated fixture original, only for vhness-local-fixture")
@@ -182,6 +184,27 @@ func run() error {
 		if err = store.Init(ctx); err != nil {
 			return err
 		}
+		if cmd == "review-source-audio" || cmd == "review-source-audio-batch" {
+			c, e := d.GetCollection(ctx, *collection)
+			if e != nil {
+				return e
+			}
+			if c.Policy == domain.Local {
+				if *recoveryReceipt == "" {
+					return fmt.Errorf("local source audio review requires --recovery-receipt")
+				}
+				raw, e := os.ReadFile(*recoveryReceipt)
+				if e != nil {
+					return e
+				}
+				if store.Recovery, e = sourcecatalog.ParseRecoveryReceipt(raw, c.ID); e != nil {
+					return e
+				}
+				store.Media = os.Getenv("VHNESS_MEDIA")
+			} else if *recoveryReceipt != "" {
+				return fmt.Errorf("--recovery-receipt applies only to a local_preserve collection")
+			}
+		}
 		switch cmd {
 		case "import-source-artist":
 			input, e := os.Open(*file)
@@ -278,11 +301,11 @@ func run() error {
 			}
 			deadline, cancel := context.WithTimeout(ctx, *timeout)
 			defer cancel()
-			coverage, e := store.ReviewAudioBatch(deadline, *items, *notes)
+			report, e := store.ReviewAudioBatch(deadline, *items, *notes)
 			if e != nil {
 				return e
 			}
-			return json.NewEncoder(os.Stdout).Encode(coverage)
+			return json.NewEncoder(os.Stdout).Encode(report)
 		case "refresh-catalog":
 			if err = store.Reconcile(ctx); err != nil {
 				return err
@@ -450,7 +473,7 @@ func run() error {
 	case "migrate":
 		return d.MigrateGranting(ctx, env("VHNESS_MIGRATIONS", "../migrations"), os.Getenv("ARKHIV_READER_ROLE"))
 	case "collection":
-		return d.Collection(ctx, domain.Collection{ID: *collection, Policy: domain.Policy(*policy), Budget: *budget, Reserve: *reserve, SourceItem: *sourceItem})
+		return d.Collection(ctx, domain.Collection{ID: *collection, Policy: domain.Policy(*policy), Budget: *budget, Reserve: *reserve, SourceItem: *sourceItem, SourceCollection: *sourceCollection})
 	case "review-budget":
 		return d.ReviewBudget(ctx, *collection, *expectedBudget, *expectedReserve, *budget, *reserve, *notes)
 	case "review-library":

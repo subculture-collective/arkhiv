@@ -56,46 +56,57 @@ func (s *Store) saveAudioAttempt(ctx context.Context, id, hash, state, message s
 	return err
 }
 
+// AudioBatchReport is the collection's coverage after a batch, plus the
+// sources this run did not approve and why.
+type AudioBatchReport struct {
+	AudioCoverage
+	Skipped []AudioSkip `json:"skipped"`
+}
+
+type AudioSkip struct {
+	ID    string `json:"id"`
+	State string `json:"state"`
+	Error string `json:"error"`
+}
+
 // ReviewAudioBatch is an explicit, bounded private playback approval. It does
 // not fetch metadata or media, and never replaces a prior independent decision.
-func (s *Store) ReviewAudioBatch(ctx context.Context, limit int, notes string) (AudioCoverage, error) {
+// For a local_preserve collection it reads only the local originals.
+func (s *Store) ReviewAudioBatch(ctx context.Context, limit int, notes string) (AudioBatchReport, error) {
+	report := AudioBatchReport{Skipped: []AudioSkip{}}
 	if limit < 1 || limit > 1000 || strings.TrimSpace(notes) == "" || len(notes) > 4000 {
-		return AudioCoverage{}, fmt.Errorf("bounded batch size and explicit playback approval notes required")
+		return report, fmt.Errorf("bounded batch size and explicit playback approval notes required")
 	}
-	collection, err := s.Core.GetCollection(ctx, s.Collection)
-	if err != nil {
-		return AudioCoverage{}, err
-	}
-	if collection.Policy != domain.Stream {
-		return AudioCoverage{}, fmt.Errorf("batch playback approval requires a source-streaming collection")
+	if _, err := s.Core.GetCollection(ctx, s.Collection); err != nil {
+		return report, err
 	}
 	conn, err := s.Core.Pool.Acquire(ctx)
 	if err != nil {
-		return AudioCoverage{}, err
+		return report, err
 	}
 	defer conn.Release()
 	var locked bool
 	if err = conn.QueryRow(ctx, `SELECT pg_try_advisory_lock(hashtextextended(current_schema() || ':source-audio:' || $1,7920))`, s.Collection).Scan(&locked); err != nil {
-		return AudioCoverage{}, err
+		return report, err
 	}
 	if !locked {
-		return AudioCoverage{}, fmt.Errorf("source audio reviewer is already running")
+		return report, fmt.Errorf("source audio reviewer is already running")
 	}
 	defer conn.Exec(context.Background(), `SELECT pg_advisory_unlock(hashtextextended(current_schema() || ':source-audio:' || $1,7920))`, s.Collection)
 	rows, err := s.Core.Pool.Query(ctx, `SELECT ci.identifier FROM source_catalog_items ci LEFT JOIN source_catalog_audio_reviews a ON a.collection_id=ci.collection_id AND a.item_id=ci.identifier
  WHERE ci.collection_id=$1 AND NOT ci.excluded AND NOT ci.unavailable AND (a.item_id IS NULL OR a.source_hash<>ci.source_hash OR (a.state='retry' AND a.next_attempt<=now()))
  ORDER BY ci.imported_at,ci.identifier LIMIT $2`, s.Collection, limit)
 	if err != nil {
-		return AudioCoverage{}, err
+		return report, err
 	}
 	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
 	if err != nil {
-		return AudioCoverage{}, err
+		return report, err
 	}
 	for _, id := range ids {
 		detail, err := s.Detail(ctx, id)
 		if err != nil {
-			return AudioCoverage{}, err
+			return report, err
 		}
 		hash := detail["snapshot_sha256"].(string)
 		if detail["unavailable"] == true {
@@ -103,11 +114,11 @@ func (s *Store) ReviewAudioBatch(ctx context.Context, limit int, notes string) (
 		}
 		var bindings []json.RawMessage
 		if err = json.Unmarshal(detail["playback_bindings"].(json.RawMessage), &bindings); err != nil {
-			return AudioCoverage{}, err
+			return report, err
 		}
 		if len(bindings) > 0 {
 			if err = s.saveAudioAttempt(ctx, id, hash, "reviewed", "", nil); err != nil {
-				return AudioCoverage{}, err
+				return report, err
 			}
 			continue
 		}
@@ -118,7 +129,7 @@ func (s *Store) ReviewAudioBatch(ctx context.Context, limit int, notes string) (
  LEFT JOIN source_catalog_audio_reviews a ON a.collection_id=$1 AND a.item_id=$2
  WHERE r.source_item_id=$2 AND r.media='audio'`, s.Collection, id).Scan(&count, &managed)
 		if err != nil {
-			return AudioCoverage{}, err
+			return report, err
 		}
 		state, message := "reviewed", ""
 		var review []byte
@@ -126,7 +137,7 @@ func (s *Store) ReviewAudioBatch(ctx context.Context, limit int, notes string) (
 			state, message = "held", "existing independent playback decision requires operator review"
 		} else if err = s.ReviewAudio(ctx, id, notes); err != nil {
 			if ctx.Err() != nil {
-				return AudioCoverage{}, ctx.Err()
+				return report, ctx.Err()
 			}
 			state, message = "retry", err.Error()
 			if errors.Is(err, ErrUnsupportedAudio) {
@@ -135,12 +146,16 @@ func (s *Store) ReviewAudioBatch(ctx context.Context, limit int, notes string) (
 		} else {
 			itemID := "audio-" + domain.Digest([]byte(s.Collection + "\x00" + id))[:24]
 			if err = s.Core.Pool.QueryRow(ctx, `SELECT review FROM representation_transport_reviews WHERE item_id=$1 AND representation_id='audio' AND collection_id=$2`, itemID, s.Collection).Scan(&review); err != nil {
-				return AudioCoverage{}, err
+				return report, err
 			}
 		}
 		if err = s.saveAudioAttempt(ctx, id, hash, state, message, review); err != nil {
-			return AudioCoverage{}, err
+			return report, err
+		}
+		if state != "reviewed" {
+			report.Skipped = append(report.Skipped, AudioSkip{ID: id, State: state, Error: message})
 		}
 	}
-	return s.AudioCoverage(ctx)
+	report.AudioCoverage, err = s.AudioCoverage(ctx)
+	return report, err
 }
